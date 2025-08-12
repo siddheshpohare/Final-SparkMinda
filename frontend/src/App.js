@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Scatter } from 'recharts';
-import { AlertTriangle, Wifi, WifiOff, TrendingUp, Upload, RefreshCw, X, Activity, Thermometer, Clock, RotateCcw, Gauge, Zap, AlertCircle, FileText } from 'lucide-react';
-import infographics1 from './infographics1.png'; // Make sure the path is correct
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Scatter, ReferenceLine, Label } from 'recharts';
+import { AlertTriangle, Wifi, WifiOff, TrendingUp, Upload, RefreshCw, X, Clock, Thermometer, RotateCcw, Gauge, Zap, AlertCircle, FileText } from 'lucide-react';
+import infographics1 from './infographics1.png';
+
+// A placeholder for the logo if the import fails
+const FallbackLogo = () => (
+    <div className="w-24 h-12 rounded-lg bg-gray-200 flex items-center justify-center">
+        <span className="text-sm font-bold text-gray-500">Logo</span>
+    </div>
+);
 
 // Custom shape for violation markers on the chart
 const ViolationMarker = ({ cx, cy }) => {
@@ -13,31 +20,128 @@ const ViolationMarker = ({ cx, cy }) => {
     );
 };
 
+// This custom shape function decides whether to render a violation marker for a point
+const ViolationShape = (props) => {
+    const { payload } = props;
+    if (payload.is_violation) {
+        return <ViolationMarker {...props} />;
+    }
+    return null;
+};
+
+// This component renders a custom dot AND a label for specific points (like min/max)
+const LabelledDot = ({ cx, cy, value }) => (
+    <g>
+        <circle cx={cx} cy={cy} r={6} stroke="rgba(0, 0, 0, 0.6)" strokeWidth={1} fill="#ffffff" />
+        <circle cx={cx} cy={cy} r={3} fill="rgba(0, 0, 0, 0.8)" />
+        <text x={cx} y={cy - 12} textAnchor="middle" fill="#333" fontSize="12" fontWeight="bold">
+            {value}
+        </text>
+    </g>
+);
+
+
+// New Component for the Performance Chart
+const PerformanceChart = ({ data, thresholds, parameter, parameters }) => {
+    // Calculate the Y-axis domain based on the entire dataset to keep it stable
+    const yDomain = useMemo(() => {
+        const allValues = data.flatMap(p => [p.actual])
+                              .filter(v => typeof v === 'number');
+        if (allValues.length === 0) return [0, 100]; 
+        const minValue = Math.min(...allValues);
+        const maxValue = Math.max(...allValues);
+        const range = maxValue - minValue;
+        const padding = range > 0 ? range * 0.1 : 20;
+        return [Math.floor(minValue - padding), Math.ceil(maxValue + padding)];
+    }, [data]);
+
+    // Find the min/max points in the full data
+    const minValue = useMemo(() => Math.min(...data.map(p => p.actual).filter(v => typeof v === 'number')), [data]);
+    const maxValue = useMemo(() => Math.max(...data.map(p => p.actual).filter(v => typeof v === 'number')), [data]);
+    const minPoint = data.find(p => p.actual === minValue);
+    const maxPoint = data.find(p => p.actual === maxValue);
+    const visibleMinMaxPoints = [minPoint, maxPoint].filter(Boolean);
+
+    return (
+        <div className="bg-white rounded-xl p-6 border border-gray-200 mb-8">
+            <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-semibold text-gray-800">
+                    Performance - {parameters.find(p => p.value === parameter)?.label || 'Parameter'}
+                </h3>
+            </div>
+            <div className="h-96">
+                <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                        <XAxis dataKey="time" stroke="#6B7280" />
+                        <YAxis
+                            stroke="#6B7280"
+                            domain={yDomain}
+                            allowDataOverflow
+                        />
+                        <Tooltip
+                            contentStyle={{
+                                backgroundColor: '#F9FAFB',
+                                border: '1px solid #E5E7EB',
+                                borderRadius: '8px',
+                                color: '#111827'
+                            }}
+                        />
+                        <Legend />
+                        <Line 
+                            type="monotone" 
+                            dataKey="actual" 
+                            name="Actual" 
+                            stroke="#3b82f6" 
+                            strokeWidth={2} 
+                            dot={false}
+                            activeDot={{ r: 6 }}
+                            connectNulls={false} 
+                        />
+                        {thresholds.upper && <ReferenceLine y={thresholds.upper} stroke="#EF4444" strokeDasharray="3 3">
+                            <Label value="Upper Std Spec" position="insideTopRight" fill="#EF4444" />
+                        </ReferenceLine>}
+                        {thresholds.lower && <ReferenceLine y={thresholds.lower} stroke="#FBBF24" strokeDasharray="3 3">
+                             <Label value="Lower Std Spec" position="insideBottomRight" fill="#FBBF24" />
+                        </ReferenceLine>}
+                        <Scatter name="Violation" dataKey="actual" data={data} shape={ViolationShape} zIndex={100} />
+                        <Scatter name="Min/Max" dataKey="actual" data={visibleMinMaxPoints} shape={LabelledDot} zIndex={101} />
+                    </LineChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+};
+
+
 const SparkMindaDashboard = () => {
     const API_BASE_URL = 'http://127.0.0.1:5000/api';
-    
+
+    // Add logo error state here
+    const [logoError, setLogoError] = useState(false);
+
+    // Application state management
     const [appStatus, setAppStatus] = useState('initializing'); 
     const [statusMessage, setStatusMessage] = useState('Connecting to server...');
-
     const [isConnected, setIsConnected] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     
-    const [selectedFile, setSelectedFile] = useState(null);
-    const [uploadStatus, setUploadStatus] = useState('');
-    const [uploadProgress, setUploadProgress] = useState(0);
-    
-    const [chartData, setChartData] = useState([]); // Will hold historical + prediction
+    // Data and selection states
+    const [chartData, setChartData] = useState([]);
     const [machines, setMachines] = useState([]);
     const [alerts, setAlerts] = useState([]);
     const [metrics, setMetrics] = useState(null);
     const [availableFeatures, setAvailableFeatures] = useState([]);
-
     const [selectedMachine, setSelectedMachine] = useState('');
     const [selectedParameter, setSelectedParameter] = useState('metal_temperature');
-    const [timeRange, setTimeRange] = useState('24hr');
+    
+    // File upload states
+    const [selectedFile, setSelectedFile] = useState(null);
+    const [uploadStatus, setUploadStatus] = useState('');
+    const [uploadProgress, setUploadProgress] = useState(0);
 
-    // Thresholds states...
+    // --- Thresholds States ---
     const [metalTempThreshold, setMetalTempThreshold] = useState(730);
     const [metalTempLowerThreshold, setMetalTempLowerThreshold] = useState(710);
     const [solidificationTimeThreshold, setSolidificationTimeThreshold] = useState(180);
@@ -48,29 +152,25 @@ const SparkMindaDashboard = () => {
     const [tiltingSpeedLowerThreshold, setTiltingSpeedLowerThreshold] = useState(6);
     const [topDieTempThreshold, setTopDieTempThreshold] = useState(380);
     const [topDieTempLowerThreshold, setTopDieTempLowerThreshold] = useState(300);
-
-    const parameters = [
+    
+    // --- Static Definitions ---
+    const parameters = useMemo(() => [
         { value: 'metal_temperature', label: 'Metal Temperature (°C)', icon: Thermometer },
         { value: 'solidification_time', label: 'Solidification Time (sec)', icon: Clock },
         { value: 'tilting_angle', label: 'Tilting Angle (°)', icon: RotateCcw },
         { value: 'tilting_speed', label: 'Tilting Speed (rpm)', icon: Gauge },
         { value: 'top_die_temperature', label: 'Top Die Temperature (°C)', icon: Zap }
-    ];
+    ], []);
 
-    const handleFileSelect = (event) => {
-        const file = event.target.files[0];
-        if (file) {
-            setSelectedFile(file);
-            setUploadStatus('');
-        }
-    };
-
+    // --- API Fetching Functions ---
     const fetchAlerts = useCallback(async () => {
         try {
             const response = await fetch(`${API_BASE_URL}/alerts`);
+            if (!response.ok) throw new Error('Failed to fetch alerts');
             const data = await response.json();
             if (data.success) setAlerts(data.alerts);
         } catch (error) {
+            console.error("Fetch Alerts Error:", error);
             setAlerts([]);
         }
     }, [API_BASE_URL]);
@@ -78,14 +178,15 @@ const SparkMindaDashboard = () => {
     const fetchMetrics = useCallback(async () => {
         try {
             const response = await fetch(`${API_BASE_URL}/metrics`);
+            if (!response.ok) throw new Error('Failed to fetch metrics');
             const data = await response.json();
             if (data.success) setMetrics(data.metrics);
         } catch (error) {
+            console.error("Fetch Metrics Error:", error);
             setMetrics(null);
         }
     }, [API_BASE_URL]);
 
-    // **FIXED**: This function now correctly updates the selected machine after a data change.
     const fetchInitialData = useCallback(async (isAfterUpload = false) => {
         setIsLoading(true);
         try {
@@ -99,7 +200,7 @@ const SparkMindaDashboard = () => {
             if (!machinesResponse.ok) {
                 if (machinesData.code === 'NO_DATA_FILE') {
                     setAppStatus('no_data');
-                    setStatusMessage(machinesData.message);
+                    setStatusMessage(machinesData.message || 'No data file found on server.');
                 } else {
                     throw new Error(machinesData.message || 'Failed to fetch machine data.');
                 }
@@ -108,7 +209,6 @@ const SparkMindaDashboard = () => {
                 const newMachines = machinesData.machines || [];
                 setMachines(newMachines);
 
-                // If it's after an upload or the current selection is invalid, reset to the first machine.
                 if (newMachines.length > 0) {
                     const currentMachineIsValid = selectedMachine && newMachines.includes(selectedMachine);
                     if (isAfterUpload || !currentMachineIsValid) {
@@ -129,6 +229,37 @@ const SparkMindaDashboard = () => {
         }
     }, [API_BASE_URL, fetchAlerts, fetchMetrics, selectedMachine]);
 
+    const fetchChartData = useCallback(async () => {
+        if (!selectedMachine || !selectedParameter) return;
+        try {
+            const response = await fetch(`${API_BASE_URL}/chart_data?machine=${selectedMachine}&parameter=${selectedParameter}`);
+            if (!response.ok) throw new Error('Failed to fetch chart data');
+            const data = await response.json();
+            if (data.success) {
+                setChartData(data.data);
+                if (data.feature_columns) {
+                    setAvailableFeatures(data.feature_columns);
+                    if (!data.feature_columns.includes(selectedParameter)){
+                        setSelectedParameter(data.feature_columns[0] || '');
+                    }
+                }
+            } else {
+                 setChartData([]);
+            }
+        } catch (error) {
+            console.error("Fetch Chart Data Error:", error);
+            setChartData([]);
+        }
+    }, [API_BASE_URL, selectedMachine, selectedParameter]);
+
+    // --- User Action Handlers ---
+    const handleFileSelect = (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            setSelectedFile(file);
+            setUploadStatus('');
+        }
+    };
 
     const uploadFile = async () => {
         if (!selectedFile) {
@@ -149,7 +280,6 @@ const SparkMindaDashboard = () => {
             
             if (response.ok && result.success) {
                 setUploadStatus(result.auto_train_status?.message || 'File processed successfully!');
-                // **FIXED**: Call fetchInitialData with a flag to indicate it's after an upload.
                 await fetchInitialData(true);
             } else {
                 setUploadStatus(result.message || 'Upload failed');
@@ -161,47 +291,7 @@ const SparkMindaDashboard = () => {
             setUploadProgress(100);
         }
     };
-
-    const fetchChartData = useCallback(async () => {
-        if (!selectedMachine || !selectedParameter) return;
-        try {
-            const response = await fetch(`${API_BASE_URL}/chart_data?range=${timeRange}&machine=${selectedMachine}&parameter=${selectedParameter}`);
-            const data = await response.json();
-            if (data.success) {
-                setChartData(data.data);
-                if (data.feature_columns) {
-                    setAvailableFeatures(data.feature_columns);
-                    if (!data.feature_columns.includes(selectedParameter)){
-                        setSelectedParameter(data.feature_columns[0] || '');
-                    }
-                }
-            } else {
-                 setChartData([]);
-            }
-        } catch (error) {
-            setChartData([]);
-        }
-    }, [API_BASE_URL, selectedMachine, selectedParameter, timeRange]);
-
     
-    // Initial data load and polling
-    useEffect(() => {
-        fetchInitialData(false);
-        const interval = setInterval(() => {
-            fetchAlerts();
-            fetchMetrics();
-        }, 30000); 
-        return () => clearInterval(interval);
-    }, []); // Removed dependencies to run only once on mount
-
-    // Effect for fetching chart data when selections change
-    useEffect(() => {
-        if (appStatus === 'ready' && selectedMachine) {
-            fetchChartData();
-        }
-    }, [appStatus, selectedMachine, fetchChartData]);
-
-
     const trainModel = async () => {
         setUploadStatus('Training model...');
         setIsLoading(true);
@@ -219,25 +309,13 @@ const SparkMindaDashboard = () => {
             setTimeout(() => setUploadStatus(''), 5000);
         }
     };
-    
-    const processedChartData = useMemo(() => {
-        return chartData.map(point => ({
-            ...point,
-            time: point.time,
-            actual: point[selectedParameter], // Use 'actual' for the value
-        }));
-    }, [chartData, selectedParameter]);
-
-    const violationData = useMemo(() => 
-        processedChartData.filter(d => d.is_violation), 
-        [processedChartData]
-    );
 
     const dismissAlert = (alertId) => {
         setAlerts(currentAlerts => currentAlerts.filter(alert => alert.id !== alertId));
     };
 
-    const getCurrentThreshold = () => {
+    // --- Threshold Logic ---
+    const getCurrentThreshold = useCallback(() => {
         switch(selectedParameter) {
             case 'metal_temperature': return { upper: metalTempThreshold, lower: metalTempLowerThreshold };
             case 'solidification_time': return { upper: solidificationTimeThreshold, lower: solidificationTimeLowerThreshold };
@@ -246,7 +324,7 @@ const SparkMindaDashboard = () => {
             case 'top_die_temperature': return { upper: topDieTempThreshold, lower: topDieTempLowerThreshold };
             default: return { upper: undefined, lower: undefined };
         }
-    };
+    }, [selectedParameter, metalTempThreshold, metalTempLowerThreshold, solidificationTimeThreshold, solidificationTimeLowerThreshold, tiltingAngleThreshold, tiltingAngleLowerThreshold, tiltingSpeedThreshold, tiltingSpeedLowerThreshold, topDieTempThreshold, topDieTempLowerThreshold]);
 
     const updateThreshold = (type, value) => {
         const numValue = parseInt(value, 10);
@@ -262,6 +340,36 @@ const SparkMindaDashboard = () => {
         }
     };
 
+    // --- Effects ---
+    useEffect(() => {
+        fetchInitialData(false);
+        const interval = setInterval(() => {
+            if(isConnected) {
+                fetchAlerts();
+                fetchMetrics();
+            }
+        }, 30000); 
+        return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (appStatus === 'ready' && selectedMachine) {
+            fetchChartData();
+        }
+    }, [appStatus, selectedMachine, selectedParameter, fetchChartData]);
+
+    // --- Memoized Data Processing ---
+    const processedChartData = useMemo(() => {
+        if (!chartData || chartData.length === 0) return [];
+        // Use selectedParameter instead of undefined variable 'parameter'
+        return chartData.map(point => ({
+            time: point.time,
+            actual: point[selectedParameter], // Always show actual value
+            is_violation: point.is_violation || false,
+        }));
+    }, [chartData, selectedParameter]);
+
     const selectedMachineMetrics = metrics && metrics[selectedMachine] ? metrics[selectedMachine] : null;
 
     // --- UI Components ---
@@ -270,18 +378,25 @@ const SparkMindaDashboard = () => {
             <div className="container mx-auto px-6 py-4">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
-                        <img src={infographics1} alt="SparkMinda Logo" className="w-24 h-12 rounded-lg" />
+                        {!logoError ? (
+                            <img 
+                                src={infographics1} 
+                                alt="SparkMinda Logo" 
+                                className="w-24 h-12 rounded-lg object-contain"
+                                onError={() => setLogoError(true)}
+                            />
+                        ) : (
+                            <FallbackLogo />
+                        )}
                         <div>
-                            <h1 className="text-2xl font-bold text-gray-800">
-                                SparkMinda
-                            </h1>
+                            <h1 className="text-2xl font-bold text-gray-800">SparkMinda</h1>
                             <p className="text-sm text-gray-500">LSTM-Powered Machine Monitor</p>
                         </div>
                     </div>
                     <div className="flex items-center space-x-4">
                         <div className={`flex items-center space-x-2 px-3 py-1 rounded-full ${isConnected ? 'bg-green-100' : 'bg-red-100'}`}>
                             {isConnected ? <Wifi className="w-4 h-4 text-green-500" /> : <WifiOff className="w-4 h-4 text-red-500" />}
-                            <span className={`text-sm ${isConnected ? 'text-green-700' : 'text-red-700'}`}>
+                            <span className={`text-sm font-semibold ${isConnected ? 'text-green-700' : 'text-red-700'}`}>
                                 {isConnected ? 'API Connected' : 'API Disconnected'}
                             </span>
                         </div>
@@ -298,7 +413,6 @@ const SparkMindaDashboard = () => {
         </header>
     );
 
-    // **FIXED**: This component now clearly shows the selected file name.
     const UploadSection = () => (
         <div className="bg-white rounded-xl p-6 border border-gray-200 mb-8">
             <h3 className="text-xl font-semibold mb-4 text-gray-800 flex items-center space-x-2">
@@ -308,7 +422,7 @@ const SparkMindaDashboard = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Upload New Data File of single machine (.xlsx, .xls, .csv)
+                        Upload New Data File (.xlsx, .xls, .csv)
                     </label>
                     <div className="flex items-center space-x-4">
                          <label htmlFor="file-upload" className="cursor-pointer px-4 py-3 bg-gray-100 border border-gray-300 rounded-lg text-gray-800 hover:bg-gray-200 transition-colors">
@@ -332,7 +446,7 @@ const SparkMindaDashboard = () => {
                             disabled={!selectedFile || isUploading || !isConnected}
                             className="ml-auto px-6 py-3 bg-gray-800 text-white rounded-lg hover:bg-gray-900 disabled:opacity-50 transition-colors flex items-center space-x-2">
                             {isUploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                            <span>{isUploading ? 'Uploading...' : 'Upload'}</span>
+                            <span>{isUploading ? 'Uploading...' : 'Upload & Train'}</span>
                         </button>
                     </div>
                 </div>
@@ -354,7 +468,7 @@ const SparkMindaDashboard = () => {
                                 )}
                             </div>
                         )}
-                        {!uploadStatus && <p className="text-sm text-gray-400">Select a file of single machine and click Upload.</p>}
+                        {!uploadStatus && <p className="text-sm text-gray-400">Select a file and click Upload.</p>}
                     </div>
                 </div>
             </div>
@@ -363,23 +477,22 @@ const SparkMindaDashboard = () => {
 
     const DashboardView = () => (
         <>
-            {/* Metrics Panel */}
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-3 gap-6 mb-8">
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                     <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-lg font-semibold text-gray-800">Downtime incidents(greater than 10 min)</h3>
+                        <h3 className="text-lg font-semibold text-gray-800">Downtime Incidents</h3>
                         <Clock className="w-5 h-5 text-red-500" />
                     </div>
                     <p className="text-3xl font-bold text-red-500">{selectedMachineMetrics?.idle_time_violations ?? 'N/A'}</p>
-                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine Selected'}</p>
+                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine'}</p>
                 </div>
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                     <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-lg font-semibold text-gray-800">Die Temp Violations</h3>
+                        <h3 className="text-lg font-semibold text-gray-800">Temp Violations</h3>
                         <Thermometer className="w-5 h-5 text-yellow-500" />
                     </div>
                     <p className="text-3xl font-bold text-yellow-500">{selectedMachineMetrics?.temperature_violations ?? 'N/A'}</p>
-                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine Selected'}</p>
+                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine'}</p>
                 </div>
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                     <div className="flex items-center justify-between mb-2">
@@ -387,11 +500,11 @@ const SparkMindaDashboard = () => {
                         <TrendingUp className="w-5 h-5 text-green-500" />
                     </div>
                     <p className="text-3xl font-bold text-green-500">{selectedMachineMetrics?.total_strokes ?? 'N/A'}</p>
-                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine Selected'}</p>
+                    <p className="text-sm text-gray-500">{selectedMachine || 'No Machine'}</p>
                 </div>
             </div>
 
-            {/* Control Panel */}
+            {/* --- Control Panel --- */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                     <h3 className="text-lg font-semibold mb-4 text-gray-800">Machine</h3>
@@ -416,7 +529,7 @@ const SparkMindaDashboard = () => {
                 </div>
 
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
-                    <h3 className="text-lg font-semibold mb-4 text-gray-800">Standard Specifications control</h3>
+                    <h3 className="text-lg font-semibold mb-4 text-gray-800">Standard Specifications Control</h3>
                     <div className="flex items-center gap-4">
                         <input
                             type="number"
@@ -436,52 +549,13 @@ const SparkMindaDashboard = () => {
                 </div>
             </div>
 
-            {/* Main Chart with Time Range Controls */}
-            <div className="bg-white rounded-xl p-6 border border-gray-200 mb-8">
-                <div className="flex justify-between items-center mb-6">
-                    <h3 className="text-xl font-semibold text-gray-800">
-                        Performance - {parameters.find(p => p.value === selectedParameter)?.label || 'Parameter'}
-                    </h3>
-                    <div className="flex items-center space-x-2 bg-gray-100 p-1 rounded-lg">
-                        {['1hr', '6hr', '24hr'].map(range => (
-                            <button
-                                key={range}
-                                onClick={() => setTimeRange(range)}
-                                className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
-                                    timeRange === range 
-                                    ? 'bg-gray-800 text-white' 
-                                    : 'text-gray-600 hover:bg-gray-200'
-                                }`}>
-                                {range.toUpperCase()}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <div className="h-96">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={processedChartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                            <XAxis dataKey="time" stroke="#6B7280" />
-                            <YAxis stroke="#6B7280" domain={['dataMin - 10', 'dataMax + 10']} allowDataOverflow />
-                            <Tooltip 
-                                contentStyle={{ 
-                                    backgroundColor: '#F9FAFB', 
-                                    border: '1px solid #E5E7EB',
-                                    borderRadius: '8px',
-                                    color: '#111827'
-                                }} 
-                            />
-                            <Legend />
-                            <Line type="monotone" dataKey="actual" stroke="#6366F1" strokeWidth={2} dot={false} name="Actual Value" connectNulls={false} />
-                            <Line type="monotone" dataKey={() => getCurrentThreshold().upper} stroke="#EF4444" strokeDasharray="5 5" dot={false} name="Upper std specification" />
-                            <Line type="monotone" dataKey={() => getCurrentThreshold().lower} stroke="#FBBF24" strokeDasharray="5 5" dot={false} name="Lower std specification" />
-                            <Scatter name="Violation" dataKey="actual" data={violationData} fill="#EF4444" shape={<ViolationMarker />} zIndex={100} />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
+            <PerformanceChart 
+                data={processedChartData}
+                thresholds={getCurrentThreshold()}
+                parameter={selectedParameter}
+                parameters={parameters}
+            />
 
-            {/* Alerts Panel */}
             {alerts.length > 0 && (
                 <div className="bg-white rounded-xl p-6 border border-red-200">
                     <h3 className="text-xl font-semibold mb-6 text-red-600">Active & Recent Alerts</h3>
@@ -496,7 +570,7 @@ const SparkMindaDashboard = () => {
                                         </p>
                                         <p className="text-sm text-gray-500">
                                             Value: <span className="font-semibold text-gray-800">{alert.value}</span> | 
-                                            Threshold: <span className="font-semibold text-gray-800">{alert.threshold}</span> | 
+                                            Standard Specification: <span className="font-semibold text-gray-800">{alert.threshold}</span> | 
                                             Time: <span className="font-semibold text-gray-800">{alert.time}</span>
                                         </p>
                                     </div>
@@ -523,10 +597,10 @@ const SparkMindaDashboard = () => {
     );
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-white via-gray-100 to-gray-200 text-gray-800 font-sans">
+        <div className="min-h-screen bg-gray-50 text-gray-800 font-sans">
             <Header />
             <main className="container mx-auto px-6 py-8">
-                {appStatus === 'initializing' && <div className="text-center p-10">Loading Dashboard...</div>}
+                {appStatus === 'initializing' && <div className="text-center p-10 font-semibold">Loading Dashboard...</div>}
                 {appStatus !== 'initializing' && <UploadSection />}
                 {appStatus === 'ready' && <DashboardView />}
                 {(appStatus === 'no_data' || appStatus === 'error') && (

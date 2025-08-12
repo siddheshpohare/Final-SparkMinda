@@ -55,12 +55,15 @@ class LSTMPredictor:
         if file_path is None:
             file_path = self.current_data_file
             
+        if not os.path.exists(file_path):
+            print(f"Data file not found at {file_path}")
+            return None, None
+
         try:
             # Read Excel or CSV file
             df = pd.read_csv(file_path) if file_path.endswith('.csv') else pd.read_excel(file_path)
             
-            # --- FIX: Make data cleaning and type conversion robust to missing columns ---
-            # Check for each column before trying to convert its type.
+            # --- Robust data cleaning and type conversion ---
             if 'NonValueAddedCycleTime(Secs)' in df.columns:
                 df["NonValueAddedCycleTime(Secs)"] = pd.to_numeric(df["NonValueAddedCycleTime(Secs)"], errors='coerce')
             if 'CycleTime(Secs)' in df.columns:
@@ -79,14 +82,15 @@ class LSTMPredictor:
                 'Top Die temperature': 'top_die_temperature', 'Top Die temperature (TDT)': 'top_die_temperature', 'TDT': 'top_die_temperature'
             }
             
-            if 'ProcessCharacteristics' in df.columns:
-                df['MappedCharacteristic'] = df['ProcessCharacteristics'].map(characteristic_mapping)
-                relevant_characteristics = df.dropna(subset=['MappedCharacteristic'])
-            else:
-                return None, None # Not enough data to proceed
+            if 'ProcessCharacteristics' not in df.columns:
+                print("'ProcessCharacteristics' column not found in the file.")
+                return None, None
+
+            df['MappedCharacteristic'] = df['ProcessCharacteristics'].map(characteristic_mapping)
+            relevant_characteristics = df.dropna(subset=['MappedCharacteristic', 'AvgValue'])
 
             if relevant_characteristics.empty:
-                print("No relevant process characteristics found!")
+                print("No relevant process characteristics found after mapping!")
                 return None, None
             
             # --- Pivot the data to create a time-series format ---
@@ -175,7 +179,6 @@ class LSTMPredictor:
             return None, "Model has not been trained yet. Please upload a file and train the model."
         
         try:
-            # Ensure there's enough data for the initial sequence
             if len(self.scaled_data) < self.seq_len:
                 return None, "Not enough historical data to make a prediction."
 
@@ -189,9 +192,12 @@ class LSTMPredictor:
             
             future_predictions = self.scaler.inverse_transform(np.array(future_predictions))
             
-            now = datetime.now()
+            # Get the last timestamp from the actual data to continue from there
+            df_selected, _ = self.load_and_preprocess_data()
+            last_timestamp = df_selected['StrokeStartTime'].max()
+
             # Each step is a 5-minute interval
-            timestamps = [(now + timedelta(minutes=i * 5)).strftime("%H:%M") for i in range(steps)]
+            timestamps = [(last_timestamp + timedelta(minutes=(i + 1) * 5)).strftime("%H:%M") for i in range(steps)]
             
             return future_predictions, timestamps
             
@@ -203,7 +209,6 @@ class LSTMPredictor:
     def calculate_metrics(self):
         """Calculates key performance indicators (KPIs) from the current data file."""
         try:
-            # Use the pivoted data which is cleaner for this calculation
             df_selected, df_raw = self.load_and_preprocess_data(self.current_data_file)
             if df_selected is None:
                 return None
@@ -211,7 +216,6 @@ class LSTMPredictor:
             machines = df_selected["MachineName"].unique()
             metrics = {}
 
-            # Define temperature thresholds
             thresholds = {
                 'metal_temperature': {'min': 675, 'max': 755},
                 'top_die_temperature': {'min': 270, 'max': 370},
@@ -222,7 +226,6 @@ class LSTMPredictor:
                 machine_data_pivoted = df_selected[df_selected["MachineName"] == machine]
                 machine_data_raw = df_raw[df_raw["MachineName"] == machine]
 
-                # --- Calculate Temperature Violations ---
                 temp_violations = 0
                 for param, limits in thresholds.items():
                     if param in machine_data_pivoted.columns:
@@ -232,7 +235,6 @@ class LSTMPredictor:
                         ]
                         temp_violations += len(violations)
 
-                # --- Calculate Other Metrics (Robustly) ---
                 idle_violations = 0
                 if 'NonValueAddedCycleTime(Secs)' in machine_data_raw.columns:
                     idle_violations = machine_data_raw[machine_data_raw["NonValueAddedCycleTime(Secs)"] > 600]["StrokeNumber"].nunique()
@@ -241,16 +243,10 @@ class LSTMPredictor:
                 if 'StrokeNumber' in machine_data_raw.columns:
                     total_strokes = machine_data_raw["StrokeNumber"].nunique()
 
-                utilization = 0
-                if 'NonValueAddedCycleTime(Secs)' in machine_data_raw.columns and 'CycleTime(Secs)' in machine_data_raw.columns:
-                    if not machine_data_raw.empty and machine_data_raw["CycleTime(Secs)"].sum() > 0:
-                        utilization = (1 - machine_data_raw["NonValueAddedCycleTime(Secs)"].sum() / machine_data_raw["CycleTime(Secs)"].sum()) * 100
-
                 metrics[machine] = {
                     "idle_time_violations": int(idle_violations),
                     "temperature_violations": int(temp_violations),
                     "total_strokes": int(total_strokes),
-                    "machine_utilization": round(utilization, 2) if pd.notna(utilization) else 0
                 }
             return metrics
 
@@ -273,7 +269,7 @@ def health_check():
     })
 
 @app.route('/api/upload', methods=['POST'])
-def upload_file():
+def upload_file_endpoint():
     """Handles file uploads from the frontend."""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "No file part in the request"}), 400
@@ -322,10 +318,9 @@ def train_model_endpoint():
 def get_chart_data():
     """
     Provides historical and predicted data for the main chart.
-    Accepts 'machine', 'parameter', and 'range' query parameters.
+    Accepts 'machine' and 'parameter' query parameters.
     """
     machine_name = request.args.get('machine', type=str)
-    time_range = request.args.get('range', '24hr', type=str).lower()
     parameter = request.args.get('parameter', type=str)
 
     if not machine_name or not parameter:
@@ -342,17 +337,8 @@ def get_chart_data():
     if machine_data.empty:
         return jsonify({"success": True, "data": [], "feature_columns": predictor.feature_columns})
         
-    machine_data = machine_data.sort_values(by='StrokeStartTime')
-
-    range_deltas = {
-        '1hr': timedelta(hours=1),
-        '6hr': timedelta(hours=6),
-        '24hr': timedelta(hours=24)
-    }
-    time_delta = range_deltas.get(time_range, timedelta(hours=24))
-    
-    latest_time = machine_data['StrokeStartTime'].max()
-    historical_data = machine_data[machine_data['StrokeStartTime'] >= (latest_time - time_delta)]
+    # Use the entire historical data for the selected machine
+    historical_data = machine_data.sort_values(by='StrokeStartTime')
 
     thresholds = {
         'metal_temperature': {'min': 710, 'max': 730},
@@ -373,18 +359,25 @@ def get_chart_data():
             
             data_point = {
                 "time": row['StrokeStartTime'].strftime("%H:%M"),
-                parameter: round(float(value), 2),
+                parameter: round(float(value), 2) if pd.notna(value) else None,
                 "is_violation": is_violation,
                 "type": "historical"
             }
             formatted_historical.append(data_point)
 
-    steps_map = {'1hr': 12, '6hr': 72, '24hr': 288}
-    steps = steps_map.get(time_range, 12)
+    # Predict a fixed number of future steps
+    steps = 20 
     predictions, timestamps = predictor.predict_future(steps)
     
     formatted_predictions = []
     if predictions is not None:
+        # **FIXED**: Create a seamless bridge between historical and predicted data.
+        # The first predicted point is now identical to the last historical point.
+        if formatted_historical:
+            bridge_point = formatted_historical[-1].copy()
+            bridge_point['type'] = 'predicted' # Mark it as part of the predicted line
+            formatted_predictions.append(bridge_point)
+
         for i, timestamp in enumerate(timestamps):
             p_dict = {"time": timestamp, "type": "predicted", "is_violation": False}
             for j, feature in enumerate(predictor.feature_columns):
@@ -438,6 +431,7 @@ def get_alerts():
             'tilting_speed': {'min': 6, 'max': 8, 'label': 'Tilting Speed'},
         }
         
+        # Sort by time to show most recent alerts first
         df_sorted = df_selected.sort_values(by='StrokeStartTime', ascending=False)
 
         for _, row in df_sorted.iterrows():
@@ -446,13 +440,17 @@ def get_alerts():
                 if param_key in row and pd.notna(row[param_key]):
                     value = row[param_key]
                     
-                    # For single-value thresholds, check for exact match is not useful, check for deviation
                     is_violation = False
+                    threshold_str = ""
+                    # For single-value thresholds (e.g., solidification time), check for any deviation
                     if limits['min'] == limits['max']:
                         if value != limits['min']:
                              is_violation = True
+                             threshold_str = f"== {limits['min']}"
+                    # For range thresholds, check if value is outside the min/max
                     elif value < limits['min'] or value > limits['max']:
                         is_violation = True
+                        threshold_str = f"{limits['min']} - {limits['max']}"
 
                     if is_violation:
                         alerts.append({
@@ -460,14 +458,13 @@ def get_alerts():
                             "machine": machine_name,
                             "parameter": limits['label'],
                             "value": round(value, 2),
-                            "threshold": f"{limits['min']} - {limits['max']}",
+                            "threshold": threshold_str,
                             "severity": "high",
                             "time": row['StrokeStartTime'].strftime("%Y-%m-%d %H:%M") if pd.notna(row['StrokeStartTime']) else "N/A"
                         })
                         alert_id_counter += 1
         
-        MAX_ALERTS = 50 
-        return jsonify({"success": True, "alerts": alerts[:MAX_ALERTS]})
+        return jsonify({"success": True, "alerts": alerts})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "message": f"Alerts error: {str(e)}"}), 500
@@ -475,13 +472,16 @@ def get_alerts():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path != "" and os.path.exists("../frontend/build/" + path):
-        return send_from_directory('../frontend/build', path)
+    # This is for a production build. For development, React's dev server is used.
+    build_folder = "../frontend/build"
+    if path != "" and os.path.exists(os.path.join(build_folder, path)):
+        return send_from_directory(build_folder, path)
     else:
-        return send_from_directory('../frontend/build', 'index.html') 
+        return send_from_directory(build_folder, 'index.html') 
     
 # --- Main Execution ---
 if __name__ == '__main__':
+    # On startup, attempt to load the default file and train the model
     if os.path.exists(predictor.current_data_file):
         print(f"Default file '{predictor.current_data_file}' found. Attempting to train model on startup...")
         success, message = predictor.train_model()
@@ -489,4 +489,5 @@ if __name__ == '__main__':
     else:
         print(f"Default file '{predictor.current_data_file}' not found. Upload a file to train the model.")
     
+    # Run the Flask app
     app.run(host='0.0.0.0', port=5000, debug=True)
