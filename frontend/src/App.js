@@ -422,7 +422,7 @@ const SparkMindaDashboard = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-center">
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Upload New Data File (.xlsx, .xls, .csv)
+                        Upload New Data File of single machine(.xlsx, .xls, .csv)
                     </label>
                     <div className="flex items-center space-x-4">
                          <label htmlFor="file-upload" className="cursor-pointer px-4 py-3 bg-gray-100 border border-gray-300 rounded-lg text-gray-800 hover:bg-gray-200 transition-colors">
@@ -468,7 +468,7 @@ const SparkMindaDashboard = () => {
                                 )}
                             </div>
                         )}
-                        {!uploadStatus && <p className="text-sm text-gray-400">Select a file and click Upload.</p>}
+                        {!uploadStatus && <p className="text-sm text-gray-400">Select a file and click Upload(single machine data at a time).</p>}
                     </div>
                 </div>
             </div>
@@ -488,7 +488,7 @@ const SparkMindaDashboard = () => {
                 </div>
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                     <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-lg font-semibold text-gray-800">Temp Violations</h3>
+                        <h3 className="text-lg font-semibold text-gray-800">Die Temp Violations</h3>
                         <Thermometer className="w-5 h-5 text-yellow-500" />
                     </div>
                     <p className="text-3xl font-bold text-yellow-500">{selectedMachineMetrics?.temperature_violations ?? 'N/A'}</p>
